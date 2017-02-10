@@ -1,0 +1,2 @@
+oslo.config>=3.7.0 # Apache-2.0
+oslo.log>=1.14.0 # Apache-2.0
