@@ -107,7 +107,7 @@ class VspcServer(object):
 
     def handle_vm_vc_uuid(self, socket, data):
         peer = socket.getpeername()
-        uuid = data[2:].decode('ascii')
+        uuid = data.decode('ascii')
         LOG.debug("<< %s VM-VC-UUID %s", peer, uuid)
         uuid = uuid.replace(' ', '')
         self.sock_to_uuid[socket] = uuid
