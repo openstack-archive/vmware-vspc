@@ -1,0 +1,9 @@
+Code-Review+1: Eric Brown <browne@vmware.com>
+Code-Review+2: Radoslav Gerganov <rgerganov@vmware.com>
+Workflow+1: Radoslav Gerganov <rgerganov@vmware.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Thu, 23 Feb 2017 15:58:07 +0000
+Reviewed-on: https://review.openstack.org/437450
+Project: openstack/vmware-vspc
+Branch: refs/heads/master
