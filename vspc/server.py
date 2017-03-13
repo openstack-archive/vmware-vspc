@@ -38,6 +38,11 @@ opts = [
     cfg.StrOpt('uri', help='VSPC URI'),
     cfg.StrOpt('serial_log_dir', help='The directory where serial logs are '
                                       'saved'),
+    cfg.IntOpt('max_log_size',
+               default=100,
+               help='Maximum file size of a serial log in KB. Log files '
+                    'greater than this size will be truncated. Any value '
+                    '< 0 will disable the option.'),
     ]
 
 CONF = cfg.CONF
@@ -189,6 +194,17 @@ class VspcServer(object):
         elif cmd == WILL:
             yield from self.handle_will(writer, opt)
 
+    def truncate_log_if_needed(self, uuid):
+        if CONF.max_log_size < 0:
+            return
+        fpath = os.path.join(CONF.serial_log_dir, uuid)
+        if os.path.getsize(fpath) > CONF.max_log_size * 1024:
+            LOG.info('Truncating %s to half of its size'.format(fpath))
+            with open(fpath, 'rb') as f:
+                data = f.read()
+            with open(fpath, 'wb') as f:
+                f.write(data[len(data) // 2:])
+
     def save_to_log(self, uuid, data):
         fpath = os.path.join(CONF.serial_log_dir, uuid)
         with open(fpath, 'ab') as f:
@@ -209,6 +225,7 @@ class VspcServer(object):
             return
         try:
             while data:
+                self.truncate_log_if_needed(uuid)
                 self.save_to_log(uuid, data)
                 data = yield from telnet.read_some()
         finally:
