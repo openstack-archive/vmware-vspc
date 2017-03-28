@@ -23,7 +23,7 @@ class VspcServerTest(testtools.TestCase):
     def test_handle_vm_vc_uuid(self):
         mock_socket = mock.Mock()
         srv = server.VspcServer()
-        data = b'11 22 33 44 55'
+        data = b'68 4c 91 6c 5f 6c 4c 2f-aa 50 df d6 61 a2 2e 0d'
         srv.handle_vm_vc_uuid(mock_socket, data)
         actual_uuid = srv.sock_to_uuid[mock_socket]
-        self.assertEqual('1122334455', actual_uuid)
+        self.assertEqual('684c916c5f6c4c2faa50dfd661a22e0d', actual_uuid)

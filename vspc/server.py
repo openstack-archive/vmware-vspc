@@ -110,6 +110,7 @@ class VspcServer(object):
         uuid = data.decode('ascii')
         LOG.debug("<< %s VM-VC-UUID %s", peer, uuid)
         uuid = uuid.replace(' ', '')
+        uuid = uuid.replace('-', '')
         self.sock_to_uuid[socket] = uuid
 
     @asyncio.coroutine
