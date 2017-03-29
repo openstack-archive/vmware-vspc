@@ -47,6 +47,7 @@ function configure_vspc {
     PROXY_URI="telnets://$SERVICE_HOST:$VSPC_PORT#thumbprint=$THUMBPRINT"
     iniset $NOVA_CONF vmware serial_port_service_uri "$VSPC_URI"
     iniset $NOVA_CONF vmware serial_port_proxy_uri "$PROXY_URI"
+    iniset $NOVA_CONF vmware serial_log_dir "$VSPC_LOG_DIR"
 }
 
 function start_vspc {
