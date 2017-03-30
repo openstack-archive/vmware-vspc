@@ -1,0 +1,8 @@
+Code-Review+2: Radoslav Gerganov <rgerganov@vmware.com>
+Workflow+1: Radoslav Gerganov <rgerganov@vmware.com>
+Verified+2: Jenkins
+Submitted-by: Jenkins
+Submitted-at: Thu, 30 Mar 2017 09:43:49 +0000
+Reviewed-on: https://review.openstack.org/451376
+Project: openstack/vmware-vspc
+Branch: refs/heads/master
