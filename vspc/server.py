@@ -72,10 +72,13 @@ SUPPORTED_OPTS = (KNOWN_SUBOPTIONS_1 + KNOWN_SUBOPTIONS_2 + VMOTION_BEGIN +
                   VM_VC_UUID + GET_VM_VC_UUID + VM_NAME + GET_VM_NAME +
                   DO_PROXY + WILL_PROXY + WONT_PROXY)
 
+# timeout in seconds during which the VM must present a uuid
+VM_UUID_TIMEOUT = 3
+
 
 class VspcServer(object):
     def __init__(self):
-        self.sock_to_uuid = dict()
+        self._loop = asyncio.get_event_loop()
 
     @asyncio.coroutine
     def handle_known_suboptions(self, writer, data):
@@ -111,7 +114,7 @@ class VspcServer(object):
         LOG.debug("<< %s VM-VC-UUID %s", peer, uuid)
         uuid = uuid.replace(' ', '')
         uuid = uuid.replace('-', '')
-        self.sock_to_uuid[socket] = uuid
+        return uuid
 
     @asyncio.coroutine
     def handle_vmotion_begin(self, writer, data):
@@ -166,7 +169,7 @@ class VspcServer(object):
             yield from writer.drain()
 
     @asyncio.coroutine
-    def option_handler(self, cmd, opt, writer, data=None):
+    def option_handler(self, cmd, opt, writer, data=None, vm_uuid_rcvd=None):
         socket = writer.get_extra_info('socket')
         if cmd == SE and data[0:1] == VMWARE_EXT:
             vmw_cmd = data[1:2]
@@ -175,7 +178,8 @@ class VspcServer(object):
             elif vmw_cmd == DO_PROXY:
                 yield from self.handle_do_proxy(writer, data[2:])
             elif vmw_cmd == VM_VC_UUID:
-                self.handle_vm_vc_uuid(socket, data[2:])
+                vm_uuid = self.handle_vm_vc_uuid(socket, data[2:])
+                vm_uuid_rcvd.set_result(vm_uuid)
             elif vmw_cmd == VMOTION_BEGIN:
                 yield from self.handle_vmotion_begin(writer, data[2:])
             elif vmw_cmd == VMOTION_PEER:
@@ -197,28 +201,30 @@ class VspcServer(object):
 
     @asyncio.coroutine
     def handle_telnet(self, reader, writer):
-        opt_handler = functools.partial(self.option_handler, writer=writer)
+        vm_uuid_rcvd = asyncio.Future()
+        opt_handler = functools.partial(self.option_handler, writer=writer,
+                                        vm_uuid_rcvd=vm_uuid_rcvd)
         telnet = async_telnet.AsyncTelnet(reader, opt_handler)
         socket = writer.get_extra_info('socket')
         peer = socket.getpeername()
         LOG.info("%s connected", peer)
-        data = yield from telnet.read_some()
-        uuid = self.sock_to_uuid.get(socket)
-        if uuid is None:
+
+        read_task = self._loop.create_task(telnet.read_some())
+        try:
+            uuid = yield from asyncio.wait_for(vm_uuid_rcvd, VM_UUID_TIMEOUT)
+        except asyncio.TimeoutError:
             LOG.error("%s didn't present UUID", peer)
             writer.close()
             return
-        try:
-            while data:
-                self.save_to_log(uuid, data)
-                data = yield from telnet.read_some()
-        finally:
-            self.sock_to_uuid.pop(socket, None)
+
+        data = yield from asyncio.wait_for(read_task, None)
+        while data:
+            self.save_to_log(uuid, data)
+            data = yield from telnet.read_some()
         LOG.info("%s disconnected", peer)
         writer.close()
 
     def start(self):
-        loop = asyncio.get_event_loop()
         ssl_context = None
         if CONF.cert:
             ssl_context = ssl.SSLContext(ssl.PROTOCOL_SSLv23)
@@ -227,21 +233,21 @@ class VspcServer(object):
                                     CONF.host,
                                     CONF.port,
                                     ssl=ssl_context,
-                                    loop=loop)
-        server = loop.run_until_complete(coro)
+                                    loop=self._loop)
+        server = self._loop.run_until_complete(coro)
 
         # Serve requests until Ctrl+C is pressed
         LOG.info("Serving on %s", server.sockets[0].getsockname())
         LOG.info("Log directory: %s", CONF.serial_log_dir)
         try:
-            loop.run_forever()
+            self._loop.run_forever()
         except KeyboardInterrupt:
             pass
 
         # Close the server
         server.close()
-        loop.run_until_complete(server.wait_closed())
-        loop.close()
+        self._loop.run_until_complete(server.wait_closed())
+        self._loop.close()
 
 
 def main():
