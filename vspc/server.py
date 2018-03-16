@@ -47,6 +47,12 @@ opts = [
                 default=False,
                 help='If enabled, accept client connections on "client_host" '
                      'and relay traffic between VMs and clients'),
+    cfg.StrOpt('admin_host',
+               default='127.0.0.1',
+               help='Host on which to listen for admin requests'),
+    cfg.IntOpt('admin_port',
+               default=13371,
+               help='Port on which to listen for admin requests'),
     cfg.StrOpt('cert', help='SSL certificate file'),
     cfg.StrOpt('key', help='SSL key file (if separate from cert)'),
     cfg.StrOpt('uri', help='VSPC URI'),
@@ -325,6 +331,30 @@ class VspcServer(object):
         LOG.info("%s disconnected", peer)
         writer.close()
 
+    @asyncio.coroutine
+    def handle_admin(self, reader, writer):
+        line_b = yield from reader.readline()
+        line = line_b.decode('ascii').strip()
+        if line == 'LIST':
+            for uuid, port in self._uuid_to_port.items():
+                ans = "%s -> %s:%d\n" % (uuid, CONF.client_host, port)
+                writer.write(ans.encode('ascii'))
+            yield from writer.drain()
+            writer.close()
+            return
+        parts = line.split()
+        if parts[0] == 'GET':
+            vm_uuid = parts[1]
+            port = self._uuid_to_port.get(vm_uuid)
+            if port:
+                ans = "%s:%d\n" % (CONF.client_host, port)
+                writer.write(ans.encode('ascii'))
+                yield from writer.drain()
+            else:
+                writer.write("None\n".encode('ascii'))
+                yield from writer.drain()
+        writer.close()
+
     def start(self):
         ssl_context = None
         if CONF.cert:
@@ -336,6 +366,12 @@ class VspcServer(object):
                                     ssl=ssl_context,
                                     loop=self._loop)
         server = self._loop.run_until_complete(coro)
+        if CONF.enable_clients:
+            coro = asyncio.start_server(self.handle_admin,
+                                        CONF.admin_host,
+                                        CONF.admin_port,
+                                        loop=self._loop)
+            admin_server = self._loop.run_until_complete(coro)
 
         # Serve requests until Ctrl+C is pressed
         LOG.info("Serving on %s", server.sockets[0].getsockname())
@@ -345,9 +381,13 @@ class VspcServer(object):
         except KeyboardInterrupt:
             pass
 
-        # Close the server
+        # Close the main server
         server.close()
         self._loop.run_until_complete(server.wait_closed())
+        # Close the admin interface
+        if CONF.enable_clients:
+            admin_server.close()
+            self._loop.run_until_complete(admin_server.wait_closed())
         # Close all connections to VMs
         for vm_writer in self._uuid_to_vm_writer.values():
             vm_writer.close()
