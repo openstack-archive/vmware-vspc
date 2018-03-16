@@ -3,7 +3,15 @@ vmware-vspc
 
 Virtual Serial Port Concentrator for use in the vSphere environment. It collects
 serial console logs from VMs which have configured virtual serial port pointing
-to it.
+to it. It can also accept client connections and provide interactive serial consoles
+if the ``enable_clients`` option is set to ``True``. When ``enable_clients=True``
+for each connected VM the program creates a server socket bound to the ``client_host``
+interface and forwards the traffic between connected clients and the corresponding VM.
+This effectively creates two-way communication to the VM's serial port.
+
+There is also an admin interface running at ``admin_host:admin_port`` which allows
+querying which host and port correspond to which VM. It is used by Nova for implementing
+the serial console feature.
 
 Usage with OpenStack
 --------------------
