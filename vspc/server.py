@@ -29,10 +29,24 @@ from vspc.async_telnet import IAC, SB, SE, DO, DONT, WILL, WONT
 opts = [
     cfg.StrOpt('host',
                default='0.0.0.0',
-               help='Host on which to listen for incoming requests'),
+               help='Host on which to listen for incoming requests from VMs'),
     cfg.IntOpt('port',
                default=13370,
-               help='Port on which to listen for incoming requests'),
+               help='Port on which to listen for incoming requests from VMs'),
+    cfg.StrOpt('client_host',
+               default='127.0.0.1',
+               help='Host on which to listen for incoming requests from '
+                    'clients'),
+    cfg.IntOpt('vm_start_port',
+               default=20000,
+               help='Start port for client connection listeners'),
+    cfg.IntOpt('vm_end_port',
+               default=30000,
+               help='End port for client connection listeners'),
+    cfg.BoolOpt('enable_clients',
+                default=False,
+                help='If enabled, accept client connections on "client_host" '
+                     'and relay traffic between VMs and clients'),
     cfg.StrOpt('cert', help='SSL certificate file'),
     cfg.StrOpt('key', help='SSL key file (if separate from cert)'),
     cfg.StrOpt('uri', help='VSPC URI'),
@@ -78,6 +92,10 @@ VM_UUID_TIMEOUT = 3
 
 class VspcServer(object):
     def __init__(self):
+        self._uuid_to_vm_writer = dict()
+        self._uuid_to_client_listener = dict()
+        self._uuid_to_client_writers = dict()
+        self._uuid_to_port = dict()
         self._loop = asyncio.get_event_loop()
 
     @asyncio.coroutine
@@ -200,6 +218,79 @@ class VspcServer(object):
             f.write(data)
 
     @asyncio.coroutine
+    def handle_client(self, reader, writer, uuid):
+        """Read data from client and send it to the VM with the specified uuid.
+        """
+        LOG.info("Client connected for VM with UUID='%s'", uuid)
+        client_writers = self._uuid_to_client_writers.get(uuid, [])
+        client_writers.append(writer)
+        self._uuid_to_client_writers[uuid] = client_writers
+        data = yield from reader.read(1024)
+        try:
+            while data:
+                vm_writer = self._uuid_to_vm_writer.get(uuid)
+                if not vm_writer:
+                    break
+                vm_writer.write(data)
+                yield from vm_writer.drain()
+                data = yield from reader.read(1024)
+        finally:
+            client_writers = self._uuid_to_client_writers.get(uuid)
+            if client_writers:
+                client_writers.remove(writer)
+        LOG.info("Client disconnected for VM with UUID='%s'", uuid)
+        writer.close()
+
+    def _find_port(self):
+        """Finds available port for client listener."""
+        for port in range(CONF.vm_start_port, CONF.vm_end_port):
+            if port not in self._uuid_to_port.values():
+                return port
+        raise Exception("Unable to find free port")
+
+    @asyncio.coroutine
+    def _start_client_listener(self, uuid):
+        """Start accepting clients for the VM with the specified uuid."""
+        port = self._find_port()
+        client_handler = functools.partial(self.handle_client, uuid=uuid)
+        self._uuid_to_port[uuid] = port
+        try:
+            coro = asyncio.start_server(client_handler, CONF.client_host, port,
+                                        loop=self._loop)
+            client_listener = yield from asyncio.wait_for(coro, None)
+            self._uuid_to_client_listener[uuid] = client_listener
+        except Exception:
+            LOG.error("Unable to start client listener on port %d for VM with "
+                      "UUID='%s'", port, uuid)
+            del self._uuid_to_vm_writer[uuid]
+            del self._uuid_to_port[uuid]
+            raise
+        LOG.info("Started client listener on port %d for VM with UUID='%s'",
+                 port, uuid)
+
+    @asyncio.coroutine
+    def _stop_client_listener(self, uuid):
+        """Stop accepting clients for the VM with the specified uuid."""
+        port = self._uuid_to_port.pop(uuid)
+        LOG.info("Stopping client listener on port %d for VM with UUID='%s'",
+                 port, uuid)
+        client_listener = self._uuid_to_client_listener.pop(uuid)
+        client_listener.close()
+        yield from asyncio.wait_for(client_listener.wait_closed(), None)
+        client_writers = self._uuid_to_client_writers.pop(uuid, [])
+        for client_writer in client_writers:
+            client_writer.close()
+
+    @asyncio.coroutine
+    def _dispatch_to_client_writers(self, data, uuid):
+        """Sends the specified data to all clients for the VM with the
+        specified uuid."""
+        client_writers = self._uuid_to_client_writers.get(uuid, [])
+        for client_writer in client_writers:
+            client_writer.write(data)
+            yield from client_writer.drain()
+
+    @asyncio.coroutine
     def handle_telnet(self, reader, writer):
         vm_uuid_rcvd = asyncio.Future()
         opt_handler = functools.partial(self.option_handler, writer=writer,
@@ -217,10 +308,20 @@ class VspcServer(object):
             writer.close()
             return
 
+        self._uuid_to_vm_writer[uuid] = writer
+        if CONF.enable_clients:
+            yield from self._start_client_listener(uuid)
         data = yield from asyncio.wait_for(read_task, None)
-        while data:
-            self.save_to_log(uuid, data)
-            data = yield from telnet.read_some()
+        try:
+            while data:
+                self.save_to_log(uuid, data)
+                if CONF.enable_clients:
+                    yield from self._dispatch_to_client_writers(data, uuid)
+                data = yield from telnet.read_some()
+        finally:
+            del self._uuid_to_vm_writer[uuid]
+            if CONF.enable_clients:
+                yield from self._stop_client_listener(uuid)
         LOG.info("%s disconnected", peer)
         writer.close()
 
@@ -247,6 +348,12 @@ class VspcServer(object):
         # Close the server
         server.close()
         self._loop.run_until_complete(server.wait_closed())
+        # Close all connections to VMs
+        for vm_writer in self._uuid_to_vm_writer.values():
+            vm_writer.close()
+        # Wait for all tasks left to complete
+        for task in asyncio.Task.all_tasks():
+            self._loop.run_until_complete(task)
         self._loop.close()
 
 
