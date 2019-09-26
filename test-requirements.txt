@@ -1,4 +1,0 @@
-flake8
-testrepository
-testtools
-mock
